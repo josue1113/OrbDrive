@@ -1,257 +1,222 @@
-const CACHE_NAME = 'rastreamento-motoristas-v1';
+const CACHE_NAME = 'orbdrive-v1';
 const urlsToCache = [
   '/',
-  '/motorista',
   '/admin',
+  '/motorista',
+  '/login',
   '/manifest.json',
-  '/icon-192x192.png',
-  '/icon-512x512.png',
+  '/offline.html'
 ];
 
-// Instalar service worker
+// Instalar Service Worker
 self.addEventListener('install', (event) => {
-  console.log('Service Worker: Instalando...');
-  
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('Service Worker: Cache aberto');
-        return cache.addAll(urlsToCache);
-      })
-      .then(() => {
-        console.log('Service Worker: Arquivos em cache');
-        return self.skipWaiting();
-      })
-      .catch((error) => {
-        console.error('Service Worker: Erro ao fazer cache:', error);
-      })
+      .then((cache) => cache.addAll(urlsToCache))
+      .then(() => self.skipWaiting())
   );
 });
 
-// Ativar service worker
+// Ativar Service Worker
 self.addEventListener('activate', (event) => {
-  console.log('Service Worker: Ativando...');
-  
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
           if (cacheName !== CACHE_NAME) {
-            console.log('Service Worker: Removendo cache antigo:', cacheName);
             return caches.delete(cacheName);
           }
         })
       );
-    }).then(() => {
-      console.log('Service Worker: Ativado');
-      return self.clients.claim();
-    })
+    }).then(() => self.clients.claim())
   );
 });
 
 // Interceptar requisições
 self.addEventListener('fetch', (event) => {
-  // Só lidar com requisições GET
-  if (event.request.method !== 'GET') {
-    return;
-  }
-
-  // Ignorar requisições para APIs externas e Supabase
-  const url = new URL(event.request.url);
-  if (
-    url.hostname.includes('supabase.co') ||
-    url.hostname.includes('googleapis.com') ||
-    url.hostname.includes('gstatic.com') ||
-    url.hostname.includes('google.com') ||
-    url.pathname.startsWith('/api/')
-  ) {
-    return;
-  }
-
   event.respondWith(
     caches.match(event.request)
       .then((response) => {
-        // Se encontrou no cache, retorna
+        // Retornar do cache se encontrado
         if (response) {
-          console.log('Service Worker: Servindo do cache:', event.request.url);
           return response;
         }
-
-        // Senão, busca na rede
-        console.log('Service Worker: Buscando na rede:', event.request.url);
-        return fetch(event.request)
-          .then((response) => {
-            // Verifica se a resposta é válida
-            if (!response || response.status !== 200 || response.type !== 'basic') {
-              return response;
-            }
-
-            // Clona a resposta para o cache
-            const responseToCache = response.clone();
-
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
-          })
-          .catch((error) => {
-            console.error('Service Worker: Erro na rede:', error);
-            
-            // Se for uma página HTML, retorna a página offline
-            if (event.request.headers.get('accept').includes('text/html')) {
-              return caches.match('/') || new Response(
-                `
-                <!DOCTYPE html>
-                <html lang="pt-BR">
-                <head>
-                  <meta charset="UTF-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>Offline - Rastreamento</title>
-                  <style>
-                    body {
-                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                      display: flex;
-                      flex-direction: column;
-                      align-items: center;
-                      justify-content: center;
-                      min-height: 100vh;
-                      margin: 0;
-                      padding: 20px;
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: white;
-                      text-align: center;
-                    }
-                    .offline-icon {
-                      font-size: 4rem;
-                      margin-bottom: 1rem;
-                    }
-                    h1 {
-                      margin: 0 0 1rem 0;
-                      font-size: 2rem;
-                      font-weight: 300;
-                    }
-                    p {
-                      margin: 0 0 2rem 0;
-                      opacity: 0.8;
-                      max-width: 400px;
-                      line-height: 1.5;
-                    }
-                    button {
-                      background: rgba(255, 255, 255, 0.2);
-                      border: 2px solid rgba(255, 255, 255, 0.3);
-                      color: white;
-                      padding: 12px 24px;
-                      border-radius: 8px;
-                      cursor: pointer;
-                      font-size: 1rem;
-                      transition: all 0.3s ease;
-                    }
-                    button:hover {
-                      background: rgba(255, 255, 255, 0.3);
-                      border-color: rgba(255, 255, 255, 0.5);
-                    }
-                  </style>
-                </head>
-                <body>
-                  <div class="offline-icon">📶</div>
-                  <h1>Você está offline</h1>
-                  <p>Verifique sua conexão com a internet e tente novamente. Algumas funcionalidades podem estar limitadas no modo offline.</p>
-                  <button onclick="window.location.reload()">Tentar Novamente</button>
-                </body>
-                </html>
-                `,
-                {
-                  status: 200,
-                  statusText: 'OK',
-                  headers: {
-                    'Content-Type': 'text/html; charset=utf-8',
-                  },
-                }
-              );
-            }
-            
-            // Para outros tipos de arquivos, retorna erro
-            return new Response('Sem conexão', {
-              status: 503,
-              statusText: 'Service Unavailable',
-            });
-          });
+        
+        // Fazer requisição de rede
+        return fetch(event.request).catch(() => {
+          // Se offline, retornar página offline para navegação
+          if (event.request.destination === 'document') {
+            return caches.match('/offline.html');
+          }
+        });
       })
   );
 });
 
-// Listener para mensagens do cliente
+// Background Sync para sincronização de dados offline
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'background-sync-location') {
+    event.waitUntil(syncLocationData());
+  }
+});
+
+// Função para sincronizar dados de localização quando voltar online
+async function syncLocationData() {
+  try {
+    // Verificar se há dados pendentes no IndexedDB
+    const pendingLocations = await getPendingLocations();
+    
+    for (const location of pendingLocations) {
+      try {
+        await sendLocationToServer(location);
+        await removePendingLocation(location.id);
+      } catch (error) {
+        console.error('Erro ao sincronizar localização:', error);
+      }
+    }
+  } catch (error) {
+    console.error('Erro no background sync:', error);
+  }
+}
+
+// Push notifications para alertas importantes
+self.addEventListener('push', (event) => {
+  const options = {
+    body: event.data ? event.data.text() : 'Nova notificação do OrbDrive',
+    icon: '/icon-192x192.png',
+    badge: '/icon-72x72.png',
+    vibrate: [100, 50, 100],
+    data: {
+      dateOfArrival: Date.now(),
+      primaryKey: 1
+    },
+    actions: [
+      {
+        action: 'explore',
+        title: 'Abrir App',
+        icon: '/icon-72x72.png'
+      },
+      {
+        action: 'close',
+        title: 'Fechar',
+        icon: '/icon-72x72.png'
+      }
+    ]
+  };
+
+  event.waitUntil(
+    self.registration.showNotification('OrbDrive', options)
+  );
+});
+
+// Ações das notificações
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'explore') {
+    event.waitUntil(
+      clients.openWindow('/')
+    );
+  }
+});
+
+// Periodic Background Sync (experimental)
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'background-location-sync') {
+    event.waitUntil(syncLocationData());
+  }
+});
+
+// Message handling entre o app e o service worker
 self.addEventListener('message', (event) => {
-  console.log('Service Worker: Mensagem recebida:', event.data);
-  
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
   
-  if (event.data && event.data.type === 'GET_VERSION') {
-    event.ports[0].postMessage({ version: CACHE_NAME });
+  if (event.data && event.data.type === 'CACHE_LOCATION') {
+    event.waitUntil(cacheLocationData(event.data.location));
   }
 });
 
-// Sincronização em background (para dados offline)
-self.addEventListener('sync', (event) => {
-  console.log('Service Worker: Sincronização em background:', event.tag);
-  
-  if (event.tag === 'background-sync-positions') {
-    event.waitUntil(syncPositions());
-  }
-});
-
-// Função para sincronizar posições quando voltar online
-async function syncPositions() {
+// Função para armazenar dados de localização offline
+async function cacheLocationData(locationData) {
   try {
-    // Buscar dados pendentes no IndexedDB
-    const pendingData = await getPendingPositions();
-    
-    if (pendingData.length > 0) {
-      console.log('Service Worker: Sincronizando', pendingData.length, 'posições');
-      
-      // Enviar dados para o servidor
-      for (const position of pendingData) {
-        try {
-          await fetch('/api/positions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(position),
-          });
-          
-          // Remover da lista de pendentes se enviado com sucesso
-          await removePendingPosition(position.id);
-        } catch (error) {
-          console.error('Service Worker: Erro ao sincronizar posição:', error);
-        }
-      }
-      
-      console.log('Service Worker: Sincronização concluída');
-    }
+    const db = await openDB();
+    const transaction = db.transaction(['locations'], 'readwrite');
+    const store = transaction.objectStore('locations');
+    await store.add({
+      ...locationData,
+      timestamp: Date.now(),
+      synced: false
+    });
   } catch (error) {
-    console.error('Service Worker: Erro na sincronização:', error);
+    console.error('Erro ao armazenar localização offline:', error);
   }
 }
 
-// Funções auxiliares para IndexedDB (seriam implementadas em um arquivo separado)
-async function getPendingPositions() {
-  // Implementação do IndexedDB para buscar dados pendentes
-  return [];
+// Abrir IndexedDB para armazenamento offline
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('OrbDriveDB', 1);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains('locations')) {
+        const store = db.createObjectStore('locations', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('timestamp', 'timestamp', { unique: false });
+        store.createIndex('synced', 'synced', { unique: false });
+      }
+    };
+  });
 }
 
-async function removePendingPosition(id) {
-  // Implementação do IndexedDB para remover dados sincronizados
-  return true;
+// Obter localizações pendentes de sincronização
+async function getPendingLocations() {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction(['locations'], 'readonly');
+    const store = transaction.objectStore('locations');
+    const index = store.index('synced');
+    
+    return new Promise((resolve, reject) => {
+      const request = index.getAll(false);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('Erro ao obter localizações pendentes:', error);
+    return [];
+  }
 }
 
-// Notificação de atualização disponível
-self.addEventListener('controllerchange', () => {
-  console.log('Service Worker: Nova versão ativa');
-});
+// Enviar localização para o servidor
+async function sendLocationToServer(location) {
+  const response = await fetch('/api/locations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(location)
+  });
+  
+  if (!response.ok) {
+    throw new Error('Falha ao enviar localização');
+  }
+  
+  return response.json();
+}
 
-console.log('Service Worker: Carregado e pronto!'); 
+// Remover localização após sincronização bem-sucedida
+async function removePendingLocation(id) {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction(['locations'], 'readwrite');
+    const store = transaction.objectStore('locations');
+    await store.delete(id);
+  } catch (error) {
+    console.error('Erro ao remover localização sincronizada:', error);
+  }
+} 

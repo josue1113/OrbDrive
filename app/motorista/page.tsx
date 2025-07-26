@@ -17,7 +17,10 @@ import {
 } from 'lucide-react';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/hooks/use-auth';
+import { useBackgroundGeolocation } from '@/hooks/use-background-geolocation';
 import { atualizarPosicao } from '@/lib/supabase';
+import PWAInstallPrompt from '@/components/PWAInstallPrompt';
+import OrbitalLogo from '@/components/OrbitalLogo';
 
 // Simulando dados para desenvolvimento
 const MOCK_USER = {
@@ -28,12 +31,16 @@ const MOCK_USER = {
 
 export default function MotoristaPage() {
   const { usuario, logout } = useAuth();
-  const [isTracking, setIsTracking] = useState(false);
-  const [position, setPosition] = useState<GeolocationPosition | null>(null);
+  const backgroundGeo = useBackgroundGeolocation({
+    enableHighAccuracy: true,
+    timeout: 10000,
+    maximumAge: 30000,
+    updateInterval: 15000
+  });
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isOnline, setIsOnline] = useState(true);
-  const [watchId, setWatchId] = useState<number | null>(null);
+  const [showPermissionPrompt, setShowPermissionPrompt] = useState(false);
 
   // Monitorar status online/offline
   useEffect(() => {
@@ -49,97 +56,81 @@ export default function MotoristaPage() {
     };
   }, []);
 
-  // Função para iniciar rastreamento
-  const startTracking = () => {
-    if (!navigator.geolocation) {
-      setError('Geolocalização não é suportada neste dispositivo');
-      return;
+  // Função para iniciar rastreamento com background
+  const startTracking = async () => {
+    if (backgroundGeo.permission !== 'granted') {
+      setShowPermissionPrompt(true);
+      const granted = await backgroundGeo.requestPermissions();
+      if (!granted) {
+        setError('Permissão de localização é necessária para o rastreamento');
+        return;
+      }
+      setShowPermissionPrompt(false);
     }
 
-    const options = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 60000
-    };
-
-    const handleSuccess = async (pos: GeolocationPosition) => {
-      setPosition(pos);
-      setLastUpdate(new Date());
+    try {
+      await backgroundGeo.startTracking();
       setError(null);
-      
-      // Salvar posição real no banco de dados
-      if (usuario?.id) {
-        try {
-          await atualizarPosicao({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            velocidade: pos.coords.speed ? pos.coords.speed * 3.6 : 0, // Converter m/s para km/h
-            precisao: pos.coords.accuracy || 0
-          });
-
-
-        } catch (error) {
-          console.error('Erro ao salvar posição:', error);
-          setError('Erro ao salvar posição no servidor');
-        }
-      }
-    };
-
-    const handleError = (err: GeolocationPositionError) => {
-      let errorMessage = 'Erro desconhecido';
-      
-      switch (err.code) {
-        case err.PERMISSION_DENIED:
-          errorMessage = 'Permissão de localização negada';
-          break;
-        case err.POSITION_UNAVAILABLE:
-          errorMessage = 'Localização indisponível';
-          break;
-        case err.TIMEOUT:
-          errorMessage = 'Timeout na obtenção da localização';
-          break;
-      }
-      
-      setError(errorMessage);
-    };
-
-    // Obter posição inicial
-    navigator.geolocation.getCurrentPosition(handleSuccess, handleError, options);
-
-    // Iniciar rastreamento contínuo
-    const id = navigator.geolocation.watchPosition(handleSuccess, handleError, options);
-    setWatchId(id);
-    setIsTracking(true);
+    } catch (error: any) {
+      setError(error.message || 'Erro ao iniciar rastreamento');
+    }
   };
 
   // Função para parar rastreamento
   const stopTracking = () => {
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      setWatchId(null);
-    }
-    setIsTracking(false);
+    backgroundGeo.stopTracking();
+    setError(null);
   };
 
-  // Sistema de heartbeat para manter status online
+  // Sincronizar posições do background geolocation com o servidor
+  useEffect(() => {
+    if (backgroundGeo.position && usuario?.id) {
+      const syncPosition = async () => {
+        try {
+          await atualizarPosicao({
+            latitude: backgroundGeo.position!.latitude,
+            longitude: backgroundGeo.position!.longitude,
+            velocidade: backgroundGeo.position!.speed || 0,
+            precisao: backgroundGeo.position!.accuracy || 0
+          });
+          setLastUpdate(new Date());
+          setError(null);
+        } catch (error) {
+          console.error('Erro ao sincronizar posição:', error);
+          if (!backgroundGeo.isInBackground()) {
+            setError('Erro ao salvar posição no servidor');
+          }
+        }
+      };
+
+      syncPosition();
+    }
+  }, [backgroundGeo.position, usuario?.id]);
+
+  // Atualizar erro baseado no hook de background
+  useEffect(() => {
+    if (backgroundGeo.error) {
+      setError(backgroundGeo.error);
+    }
+  }, [backgroundGeo.error]);
+
+  // Sistema de heartbeat adicional para garantir sincronização
   useEffect(() => {
     let heartbeatInterval: NodeJS.Timeout | null = null;
 
-    if (isTracking && usuario?.id) {
-      // Enviar heartbeat a cada 15 segundos
+    if (backgroundGeo.isTracking && usuario?.id) {
+      // Heartbeat a cada 30 segundos para garantir sincronização
       heartbeatInterval = setInterval(async () => {
         try {
-          
-          // Se temos uma posição atual, enviar ela
-          if (position) {
+          if (backgroundGeo.position) {
             await atualizarPosicao({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              velocidade: position.coords.speed ? position.coords.speed * 3.6 : 0,
-              precisao: position.coords.accuracy || 0
+              latitude: backgroundGeo.position.latitude,
+              longitude: backgroundGeo.position.longitude,
+              velocidade: backgroundGeo.position.speed || 0,
+              precisao: backgroundGeo.position.accuracy || 0
             });
           } else {
-            // Se não tem posição, tentar obter uma rapidamente
+            // Se não tem posição no hook, tentar obter uma rapidamente
             navigator.geolocation.getCurrentPosition(
               async (pos) => {
                 await atualizarPosicao({
@@ -166,12 +157,12 @@ export default function MotoristaPage() {
         clearInterval(heartbeatInterval);
       }
     };
-  }, [isTracking, usuario?.id, position]);
+  }, [backgroundGeo.isTracking, usuario?.id]);
 
   // Função para fazer logout
   const handleLogout = async () => {
     // Parar rastreamento antes de sair
-    if (isTracking) {
+    if (backgroundGeo.isTracking) {
       stopTracking();
     }
     
@@ -197,7 +188,33 @@ export default function MotoristaPage() {
   return (
     <ProtectedRoute only="motorista">
       {/* Conteúdo da página motorista */}
-      <div className="min-h-screen bg-primary-50 flex flex-col items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-mist-50 to-white flex flex-col">
+        {/* Header Orbital */}
+        <header className="header-orbital sticky top-0 z-40">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex justify-between items-center h-16">
+              <OrbitalLogo size="sm" />
+              <div className="flex items-center space-x-4">
+                <div className="hidden sm:block">
+                  <span className="text-sm text-gray-600">Motorista</span>
+                  <p className="font-orbital font-semibold text-graphite-900">
+                    {usuario?.nome || 'Carregando...'}
+                  </p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="btn-orbital-outline px-4 py-2 text-sm"
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Sair
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="flex-1 grid-orbital py-8">
         {/* Header */}
         <header className="bg-white shadow-sm border-b border-gray-200">
           <div className="px-4 py-4">
@@ -237,42 +254,99 @@ export default function MotoristaPage() {
               </div>
             </div>
           </div>
-        </header>
+        </header> */}
 
         {/* Main Content */}
-        <main className="px-4 py-6 space-y-6">
-          {/* Perfil do Motorista */}
-          <div className="card">
-            <div className="card-body">
-              <div className="flex items-center space-x-3">
-                <div className="bg-gray-100 p-3 rounded-full">
-                  <User className="w-6 h-6 text-gray-600" />
+        <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            
+            {/* Card de Status Principal */}
+            <div className="lg:col-span-2">
+              <div className="orbital-card p-8 text-center">
+                <div className="flex justify-center mb-6">
+                  <div className="icon-orbital-pulse w-20 h-20 rounded-full bg-orbital-light flex items-center justify-center">
+                    <MapPin className="w-10 h-10 text-cobalt-500" />
+                  </div>
                 </div>
-                <div>
-                  <h3 className="font-semibold text-gray-900">{usuario?.nome || 'Motorista'}</h3>
-                  <p className="text-sm text-gray-600">{usuario?.empresa?.nome || 'Empresa'}</p>
+                
+                <h2 className="font-orbital text-2xl font-bold text-graphite-900 mb-2">
+                  Sistema de Rastreamento
+                </h2>
+                
+                <div className="flex items-center justify-center space-x-4 mb-6">
+                  {/* Status Conectividade */}
+                  <div className="flex items-center space-x-2">
+                    {isOnline ? (
+                      <Wifi className="w-5 h-5 text-lime-signal-500" />
+                    ) : (
+                      <WifiOff className="w-5 h-5 text-amber-alert-500" />
+                    )}
+                    <span className={`text-sm font-medium ${
+                      isOnline ? 'text-lime-signal-600' : 'text-amber-alert-600'
+                    }`}>
+                      {isOnline ? 'Conectado' : 'Offline'}
+                    </span>
+                  </div>
+                  
+                  {/* Separador */}
+                  <div className="w-1 h-4 bg-gray-300 rounded-full"></div>
+                  
+                  {/* Status Rastreamento */}
+                  <div className={`status-orbital-${backgroundGeo.isTracking ? 'online' : 'offline'}`}>
+                    {backgroundGeo.isTracking ? (
+                      <>
+                        <Navigation className="w-4 h-4 mr-2" />
+                        Rastreando
+                      </>
+                    ) : (
+                      <>
+                        <Clock className="w-4 h-4 mr-2" />
+                        Parado
+                      </>
+                    )}
+                  </div>
                 </div>
+                
+                {/* Botão Principal */}
+                {!backgroundGeo.isTracking ? (
+                  <button
+                    onClick={startTracking}
+                    disabled={!isOnline}
+                    className="btn-orbital-primary px-8 py-4 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Play className="w-6 h-6 mr-3" />
+                    Iniciar Rastreamento
+                  </button>
+                ) : (
+                  <button
+                    onClick={stopTracking}
+                    className="bg-amber-alert-500 hover:bg-amber-alert-600 text-white px-8 py-4 rounded-xl text-lg font-semibold transition-all duration-300"
+                  >
+                    <Square className="w-6 h-6 mr-3" />
+                    Parar Rastreamento
+                  </button>
+                )}
               </div>
             </div>
-          </div>
 
-          {/* Status do Rastreamento */}
-          <div className="card">
-            <div className="card-body">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-900">Status do Rastreamento</h3>
+            {/* Cards de Dados */}
+            {backgroundGeo.position && (
+              <>
+                <div className="data-card">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-orbital text-lg font-semibold text-graphite-900">Localização</h3>
                 <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-                  isTracking 
+                  backgroundGeo.isTracking 
                     ? 'bg-success-100 text-success-800' 
                     : 'bg-gray-100 text-gray-800'
                 }`}>
-                  {isTracking ? 'Ativo' : 'Parado'}
+                  {backgroundGeo.isTracking ? 'Ativo' : 'Parado'}
                 </div>
               </div>
 
               {/* Botão Principal */}
               <div className="mb-6">
-                {!isTracking ? (
+                {!backgroundGeo.isTracking ? (
                   <button
                     onClick={startTracking}
                     disabled={!isOnline}
@@ -293,26 +367,26 @@ export default function MotoristaPage() {
               </div>
 
               {/* Informações da Posição */}
-              {position && (
+              {backgroundGeo.position && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between py-2 border-t border-gray-200">
                     <span className="text-sm text-gray-600">Coordenadas:</span>
                     <span className="text-sm font-mono">
-                      {formatCoordinates(position.coords.latitude, position.coords.longitude)}
+                      {formatCoordinates(backgroundGeo.position.latitude, backgroundGeo.position.longitude)}
                     </span>
                   </div>
                   
                   <div className="flex items-center justify-between py-2 border-t border-gray-200">
                     <span className="text-sm text-gray-600">Velocidade:</span>
                     <span className="text-sm font-mono">
-                      {formatSpeed(position.coords.speed)}
+                      {formatSpeed(backgroundGeo.position.speed || null)}
                     </span>
                   </div>
                   
                   <div className="flex items-center justify-between py-2 border-t border-gray-200">
                     <span className="text-sm text-gray-600">Precisão:</span>
                     <span className="text-sm font-mono">
-                      {position.coords.accuracy?.toFixed(1)} m
+                      {backgroundGeo.position.accuracy?.toFixed(1)} m
                     </span>
                   </div>
                   
@@ -383,6 +457,38 @@ export default function MotoristaPage() {
           </div>
         </main>
       </div>
+
+      {/* PWA Install Prompt */}
+      <PWAInstallPrompt />
+
+      {/* Permission Prompt */}
+      {showPermissionPrompt && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full">
+            <h3 className="text-lg font-semibold mb-2">Permissões Necessárias</h3>
+            <p className="text-gray-600 mb-4">
+              Para funcionar em segundo plano, o app precisa de permissão para acessar sua localização mesmo quando não estiver em uso.
+            </p>
+            <div className="flex space-x-3">
+              <button
+                onClick={() => setShowPermissionPrompt(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  await backgroundGeo.requestPermissions();
+                  setShowPermissionPrompt(false);
+                }}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
+              >
+                Permitir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ProtectedRoute>
   );
 } 

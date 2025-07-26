@@ -22,6 +22,7 @@ import { useAuth } from '@/hooks/use-auth';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import CadastroMotorista from '@/components/admin/CadastroMotorista';
 import ListaMotoristas from '@/components/admin/ListaMotoristas';
+import PWAInstallPrompt from '@/components/PWAInstallPrompt';
 
 // Configuração do Google Maps
 const GOOGLE_MAPS_API_KEY = 'AIzaSyAxYDfxuRMozJuo2FRuKybzg-Nn29hXWps';
@@ -823,6 +824,9 @@ export default function AdminPage() {
           </div>
         )}
       </div>
+
+      {/* PWA Install Prompt */}
+      <PWAInstallPrompt />
     </ProtectedRoute>
   );
 } 

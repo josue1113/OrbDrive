@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline - OrbDrive</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      text-align: center;
+    }
+    
+    .offline-container {
+      max-width: 400px;
+      animation: fadeIn 0.5s ease-in;
+    }
+    
+    .offline-icon {
+      font-size: 4rem;
+      margin-bottom: 1rem;
+      animation: pulse 2s infinite;
+    }
+    
+    h1 {
+      margin: 0 0 1rem 0;
+      font-size: 2rem;
+      font-weight: 300;
+    }
+    
+    p {
+      margin: 0 0 2rem 0;
+      opacity: 0.9;
+      line-height: 1.6;
+      font-size: 1.1rem;
+    }
+    
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    
+    button {
+      background: rgba(255, 255, 255, 0.2);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+    
+    button:hover {
+      background: rgba(255, 255, 255, 0.3);
+      border-color: rgba(255, 255, 255, 0.5);
+      transform: translateY(-2px);
+    }
+    
+    button:active {
+      transform: translateY(0);
+    }
+    
+    .status {
+      margin-top: 2rem;
+      padding: 1rem;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+    
+    .status.online {
+      background: rgba(76, 175, 80, 0.3);
+      border: 1px solid rgba(76, 175, 80, 0.5);
+    }
+    
+    .status.offline {
+      background: rgba(244, 67, 54, 0.3);
+      border: 1px solid rgba(244, 67, 54, 0.5);
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+    
+    @media (max-width: 480px) {
+      .offline-container {
+        padding: 0 1rem;
+      }
+      
+      h1 {
+        font-size: 1.5rem;
+      }
+      
+      .offline-icon {
+        font-size: 3rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-container">
+    <div class="offline-icon">📡</div>
+    <h1>Você está offline</h1>
+    <p>
+      Não foi possível se conectar ao servidor. Verifique sua conexão com a internet e tente novamente.
+    </p>
+    
+    <div class="actions">
+      <button onclick="window.location.reload()">
+        🔄 Tentar Novamente
+      </button>
+      <button onclick="goHome()">
+        🏠 Ir para Início
+      </button>
+    </div>
+    
+    <div id="status" class="status offline">
+      🔴 Offline - Verificando conexão...
+    </div>
+  </div>
+
+  <script>
+    // Verificar status da conexão
+    function updateConnectionStatus() {
+      const status = document.getElementById('status');
+      if (navigator.onLine) {
+        status.className = 'status online';
+        status.innerHTML = '🟢 Online - Conexão restabelecida!';
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } else {
+        status.className = 'status offline';
+        status.innerHTML = '🔴 Offline - Verificando conexão...';
+      }
+    }
+
+    // Função para ir para home
+    function goHome() {
+      if (navigator.onLine) {
+        window.location.href = '/';
+      } else {
+        alert('Você precisa estar online para navegar.');
+      }
+    }
+
+    // Listeners para mudanças de conexão
+    window.addEventListener('online', updateConnectionStatus);
+    window.addEventListener('offline', updateConnectionStatus);
+
+    // Verificar conexão a cada 5 segundos
+    setInterval(() => {
+      updateConnectionStatus();
+    }, 5000);
+
+    // Verificação inicial
+    updateConnectionStatus();
+
+    // Tentar reconectar automaticamente em background
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(registration => {
+        // Registrar background sync para quando voltar online
+        if ('sync' in registration) {
+          registration.sync.register('background-sync-location').catch(console.error);
+        }
+      });
+    }
+  </script>
+</body>
+</html> 
