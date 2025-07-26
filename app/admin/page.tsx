@@ -1,8 +1,6 @@
 'use client';
 
-// @ts-ignore
 import { useState, useEffect, useRef } from 'react';
-// @ts-ignore
 import { 
   Users, 
   MapPin, 
@@ -14,7 +12,11 @@ import {
   Car,
   AlertCircle,
   UserPlus,
-  List
+  List,
+  LogOut,
+  Menu,
+  X,
+  MoreVertical
 } from 'lucide-react';
 
 import { supabase, buscarPosicoesMotoristas, subscribeToPositions, unsubscribeFromPositions } from '@/lib/supabase';
@@ -44,6 +46,7 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'mapa' | 'cadastro' | 'lista'>('mapa');
   const [refreshDriversList, setRefreshDriversList] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
   // Dados dos motoristas em memória (sem causar re-render)
   const driversDataRef = useRef<any[]>([]);
@@ -60,351 +63,147 @@ export default function AdminPage() {
     }
   }
 
-  // Inicializar Google Maps
-  useEffect(() => {
-    const initMap = () => {
-      // Só carregar se estivermos na aba do mapa
-      if (activeTab !== 'mapa') return;
-      if (mapInstanceRef.current) return;
+  // Atualizar marcadores do mapa diretamente sem re-render
+  const updateMapMarkersDirectly = (driversData: any[]) => {
+    if (!mapInstanceRef.current || !window.google) return;
 
-      // Dar um tempo para o DOM ser renderizado
-      setTimeout(() => {
-        if (!mapRef.current) return;
+    // Limpar marcadores existentes
+    markersRef.current.forEach(marker => {
+      if (marker.setMap) {
+        marker.setMap(null);
+      }
+    });
+    markersRef.current = [];
 
-        // Verificar se já existe script do Google Maps
-        const existingScript = document.querySelector('script[src*="maps.googleapis.com"]');
-        
-        if (!window.google && !existingScript) {
-          const script = document.createElement('script');
-          script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
-          script.async = true;
-          script.onload = initializeMap;
-          document.head.appendChild(script);
-        } else if (window.google) {
-          initializeMap();
-        }
-      }, 100);
-    };
+    // Adicionar novos marcadores
+    driversData.forEach(driver => {
+      if (driver.posicao?.latitude && driver.posicao?.longitude) {
+        const isOnline = driver.posicao && 
+          new Date(driver.posicao.atualizado_em).getTime() > Date.now() - 60000;
 
-    const initializeMap = () => {
-      if (!mapRef.current || mapInstanceRef.current || !window.google?.maps) return;
+        const marker = new window.google.maps.Marker({
+          position: {
+            lat: parseFloat(driver.posicao.latitude),
+            lng: parseFloat(driver.posicao.longitude)
+          },
+          map: mapInstanceRef.current,
+          title: driver.nome,
+          icon: {
+            path: 0, // Circle
+            scale: 8,
+            fillColor: isOnline ? '#22c55e' : '#6b7280',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+          }
+        });
 
-      try {
+        const infoWindow = new window.google.maps.InfoWindow({
+          content: `
+            <div class="p-2">
+              <h3 class="font-semibold">${driver.nome}</h3>
+              <p class="text-sm text-gray-600">${driver.empresa?.nome || 'N/A'}</p>
+              <p class="text-xs text-gray-500">
+                Status: <span class="${isOnline ? 'text-green-600' : 'text-gray-600'}">${isOnline ? 'Online' : 'Offline'}</span>
+              </p>
+              <p class="text-xs text-gray-500">
+                Atualizado: ${new Date(driver.posicao.atualizado_em).toLocaleTimeString()}
+              </p>
+            </div>
+          `
+        });
+
+        marker.addListener('click', () => {
+          infoWindow.open(mapInstanceRef.current, marker);
+          setSelectedDriver(driver.id);
+        });
+
+        markersRef.current.push(marker);
+      }
+    });
+  };
+
+  // Carregar script do Google Maps
+  const loadGoogleMapsScript = () => {
+    return new Promise<void>((resolve, reject) => {
+      if (window.google && window.google.maps) {
+        resolve();
+        return;
+      }
+
+      const existingScript = document.querySelector(`script[src*="maps.googleapis.com"]`);
+      if (existingScript) {
+        existingScript.addEventListener('load', () => resolve());
+        existingScript.addEventListener('error', () => reject(new Error('Failed to load Google Maps')));
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=geometry`;
+      script.async = true;
+      script.defer = true;
+      
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Maps'));
+      
+      document.head.appendChild(script);
+    });
+  };
+
+  // Inicializar o mapa
+  const initializeMap = async () => {
+    try {
+      await loadGoogleMapsScript();
+      
+      if (mapRef.current && window.google) {
         mapInstanceRef.current = new window.google.maps.Map(mapRef.current, {
           center: { lat: -23.5505, lng: -46.6333 },
           zoom: 12,
-          mapTypeId: 'roadmap'
+          mapTypeId: 'roadmap',
+          disableDefaultUI: false,
+          zoomControl: true,
+          mapTypeControl: false,
+          scaleControl: true,
+          streetViewControl: false,
+          rotateControl: false,
+          fullscreenControl: true
         });
-        
-        // Aguardar um pouco antes de adicionar marcadores
-        setTimeout(() => {
-          updateMapMarkers();
-          loadDriversData();
-        }, 500);
-      } catch (error) {
-        console.error('Erro ao criar mapa:', error);
       }
-    };
-
-    initMap();
-  }, [activeTab]); // Depende da aba ativa
-
-  // Atualizar marcadores diretamente no mapa (sem re-render do React)
-  const updateMapMarkersDirectly = (newDriversData: any[]) => {
-    if (!mapInstanceRef.current || !window.google || !window.google.maps) return;
-
-    // Criar um map dos novos dados por ID
-    const newDriversMap = new Map();
-    newDriversData.forEach(driver => {
-      if (driver.posicao) {
-        newDriversMap.set(driver.id, driver);
-      }
-    });
-
-    // Atualizar marcadores existentes
-    markersRef.current = markersRef.current.filter(marker => {
-      const newDriverData = newDriversMap.get(marker.driverId);
-      
-      if (!newDriverData) {
-        // Driver não existe mais, remover marcador
-        marker.setMap(null);
-        return false;
-      }
-
-      // Verificar se a posição realmente mudou
-      const currentPos = marker.getPosition();
-      const newLat = newDriverData.posicao.latitude;
-      const newLng = newDriverData.posicao.longitude;
-      
-      const hasPositionChanged = !currentPos || 
-        Math.abs(currentPos.lat() - newLat) > 0.000001 || 
-        Math.abs(currentPos.lng() - newLng) > 0.000001;
-
-      const hasStatusChanged = marker.currentStatus !== newDriverData.status;
-
-      // Só atualizar se algo mudou
-      if (hasPositionChanged || hasStatusChanged) {
-        // Atualizar posição suavemente
-        if (hasPositionChanged) {
-          marker.setPosition({ lat: newLat, lng: newLng });
-        }
-        
-        // Atualizar ícone se status mudou
-        if (hasStatusChanged) {
-          const iconColor = newDriverData.status === 'online' ? '#22c55e' : '#6b7280';
-          marker.setIcon({
-            url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-              <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="10" cy="10" r="8" fill="${iconColor}" stroke="#ffffff" stroke-width="2"/>
-                <circle cx="10" cy="10" r="3" fill="#ffffff"/>
-              </svg>
-            `),
-            scaledSize: new window.google.maps.Size(20, 20)
-          });
-          marker.currentStatus = newDriverData.status;
-        }
-
-        // Atualizar info window
-        const statusColor = newDriverData.status === 'online' ? '#22c55e' : '#6b7280';
-        const statusText = newDriverData.status === 'online' ? 'Online' : 'Offline';
-        
-        if (marker.infoWindow) {
-          marker.infoWindow.setContent(`
-            <div class="p-2">
-              <h4 class="font-semibold">${newDriverData.nome}</h4>
-              <p class="text-sm" style="color: ${statusColor}">Status: ${statusText}</p>
-              <p class="text-sm text-gray-600">Velocidade: ${newDriverData.posicao.velocidade?.toFixed(1) || 0} km/h</p>
-              <p class="text-sm text-gray-600">Atualizado: ${newDriverData.posicao.atualizado_em.toLocaleTimeString()}</p>
-            </div>
-          `);
-        }
-      }
-
-      newDriversMap.delete(newDriverData.id);
-      return true;
-    });
-
-    // Adicionar marcadores para novos motoristas
-    newDriversMap.forEach((driver) => {
-      const marker = new window.google.maps.Marker({
-        position: {
-          lat: driver.posicao.latitude,
-          lng: driver.posicao.longitude
-        },
-        map: mapInstanceRef.current,
-        title: `${driver.nome} (${driver.status})`,
-        icon: {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-            <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="8" fill="${driver.status === 'online' ? '#22c55e' : '#6b7280'}" stroke="#ffffff" stroke-width="2"/>
-              <circle cx="10" cy="10" r="3" fill="#ffffff"/>
-            </svg>
-          `),
-          scaledSize: new window.google.maps.Size(20, 20)
-        }
-      });
-
-      marker.driverId = driver.id;
-      marker.currentStatus = driver.status;
-
-      const statusColor = driver.status === 'online' ? '#22c55e' : '#6b7280';
-      const statusText = driver.status === 'online' ? 'Online' : 'Offline';
-      
-      const infoWindow = new window.google.maps.InfoWindow({
-        content: `
-          <div class="p-2">
-            <h4 class="font-semibold">${driver.nome}</h4>
-            <p class="text-sm" style="color: ${statusColor}">Status: ${statusText}</p>
-            <p class="text-sm text-gray-600">Velocidade: ${driver.posicao.velocidade?.toFixed(1) || 0} km/h</p>
-            <p class="text-sm text-gray-600">Atualizado: ${driver.posicao.atualizado_em.toLocaleTimeString()}</p>
-          </div>
-        `
-      });
-
-      marker.addListener('click', () => {
-        markersRef.current.forEach(m => {
-          if (m.infoWindow && m !== marker) m.infoWindow.close();
-        });
-        infoWindow.open(mapInstanceRef.current, marker);
-        setSelectedDriver(driver.id);
-      });
-
-      marker.infoWindow = infoWindow;
-      markersRef.current.push(marker);
-    });
-  };
-
-  // Função original para inicialização (mantida para compatibilidade)
-  const updateMapMarkers = () => {
-    if (!mapInstanceRef.current || !window.google || !window.google.maps) return;
-
-    // Criar um map dos drivers atuais por ID
-    const driversMap = new Map();
-    drivers.forEach(driver => {
-      if (driver.posicao) {
-        driversMap.set(driver.id, driver);
-      }
-    });
-
-    // Atualizar marcadores existentes ou remover se o driver não existe mais
-    markersRef.current = markersRef.current.filter(marker => {
-      const driver = driversMap.get(marker.driverId);
-      
-      if (!driver) {
-        // Driver não existe mais, remover marcador
-        marker.setMap(null);
-        return false;
-      }
-
-      // Atualizar posição do marcador existente
-      const newPosition = {
-        lat: driver.posicao.latitude,
-        lng: driver.posicao.longitude
-      };
-      
-      marker.setPosition(newPosition);
-      marker.setTitle(`${driver.nome} (${driver.status})`);
-      
-      // Atualizar ícone baseado no status
-      const iconColor = driver.status === 'online' ? '#22c55e' : '#6b7280';
-      marker.setIcon({
-        url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-          <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="10" cy="10" r="8" fill="${iconColor}" stroke="#ffffff" stroke-width="2"/>
-            <circle cx="10" cy="10" r="3" fill="#ffffff"/>
-          </svg>
-        `),
-        scaledSize: new window.google.maps.Size(20, 20)
-      });
-
-      // Atualizar conteúdo do info window
-      const statusColor = driver.status === 'online' ? '#22c55e' : '#6b7280';
-      const statusText = driver.status === 'online' ? 'Online' : 'Offline';
-      
-      if (marker.infoWindow) {
-        marker.infoWindow.setContent(`
-          <div class="p-2">
-            <h4 class="font-semibold">${driver.nome}</h4>
-            <p class="text-sm" style="color: ${statusColor}">Status: ${statusText}</p>
-            <p class="text-sm text-gray-600">Velocidade: ${driver.posicao.velocidade?.toFixed(1) || 0} km/h</p>
-            <p class="text-sm text-gray-600">Atualizado: ${driver.posicao.atualizado_em.toLocaleTimeString()}</p>
-          </div>
-        `);
-      }
-
-      // Marcar como processado
-      driversMap.delete(driver.id);
-      return true;
-    });
-
-    // Adicionar novos marcadores para drivers que não tinham marcador ainda
-    driversMap.forEach((driver) => {
-      const marker = new window.google.maps.Marker({
-        position: {
-          lat: driver.posicao.latitude,
-          lng: driver.posicao.longitude
-        },
-        map: mapInstanceRef.current,
-        title: `${driver.nome} (${driver.status})`,
-        icon: {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-            <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="8" fill="${driver.status === 'online' ? '#22c55e' : '#6b7280'}" stroke="#ffffff" stroke-width="2"/>
-              <circle cx="10" cy="10" r="3" fill="#ffffff"/>
-            </svg>
-          `),
-          scaledSize: new window.google.maps.Size(20, 20)
-        }
-      });
-
-      // Associar o ID do driver ao marcador
-      marker.driverId = driver.id;
-
-      // Adicionar info window
-      const statusColor = driver.status === 'online' ? '#22c55e' : '#6b7280';
-      const statusText = driver.status === 'online' ? 'Online' : 'Offline';
-      
-      const infoWindow = new window.google.maps.InfoWindow({
-        content: `
-          <div class="p-2">
-            <h4 class="font-semibold">${driver.nome}</h4>
-            <p class="text-sm" style="color: ${statusColor}">Status: ${statusText}</p>
-            <p class="text-sm text-gray-600">Velocidade: ${driver.posicao.velocidade?.toFixed(1) || 0} km/h</p>
-            <p class="text-sm text-gray-600">Atualizado: ${driver.posicao.atualizado_em.toLocaleTimeString()}</p>
-          </div>
-        `
-      });
-
-      marker.addListener('click', () => {
-        // Fechar outras info windows
-        markersRef.current.forEach(m => {
-          if (m.infoWindow && m !== marker) m.infoWindow.close();
-        });
-        
-        infoWindow.open(mapInstanceRef.current, marker);
-        setSelectedDriver(driver.id);
-      });
-
-      marker.infoWindow = infoWindow;
-      markersRef.current.push(marker);
-    });
-  };
-
-  // Buscar dados reais do Supabase
-  const loadDriversData = async () => {
-    if (!usuario) return;
-
-    if (!usuario.empresa_id) {
-      setError('Usuário não tem empresa associada');
-      setIsLoading(false);
-      return;
+    } catch (error) {
+      console.error('Erro ao carregar Google Maps:', error);
+      setError('Erro ao carregar o mapa. Verifique sua conexão.');
     }
+  };
 
+  // Atualizar marcadores (versão que não causa re-render)
+  const updateMapMarkers = (driversData: any[]) => {
+    // Salvar dados em ref para não causar re-render
+    driversDataRef.current = driversData;
+    // Atualizar marcadores diretamente
+    updateMapMarkersDirectly(driversData);
+  };
+
+  // Carregar dados dos motoristas
+  const loadDriversData = async () => {
     try {
-      // Só mostrar loading na primeira carga
       if (isInitialLoadRef.current) {
         setIsLoading(true);
       }
+      
+      const data = await buscarPosicoesMotoristas(usuario?.empresa_id);
+      
+      setDrivers(data);
+      updateMapMarkers(data);
+      setLastUpdate(new Date());
       setError(null);
       
-      // Buscar apenas motoristas da empresa do admin logado
-      const posicoes = await buscarPosicoesMotoristas(usuario.empresa_id);
-      
-      // Transformar dados do Supabase para o formato esperado
-      const driversData = posicoes.map((pos: any) => {
-        const ultimaAtualizacao = new Date(pos.atualizado_em);
-        const agora = new Date();
-        const diferencaMinutos = (agora.getTime() - ultimaAtualizacao.getTime()) / (1000 * 60);
-        
-        // Considerar online se última atualização foi há menos de 1 minuto
-        const isOnline = diferencaMinutos < 1 && pos.latitude && pos.longitude;
-        
-        return {
-          id: pos.usuario.id,
-          nome: pos.usuario.nome,
-          posicao: pos.latitude && pos.longitude ? {
-            latitude: pos.latitude,
-            longitude: pos.longitude,
-            velocidade: pos.velocidade || 0,
-            atualizado_em: ultimaAtualizacao
-          } : null,
-          status: isOnline ? 'online' : 'offline'
-        };
-      });
-      
-      // Atualizar dados em memória e mapa diretamente (sem re-render)
-      driversDataRef.current = driversData;
-      updateMapMarkersDirectly(driversData);
-      
-
-      
-      // Atualizar apenas a sidebar (sem afetar o mapa)
-      setDrivers(driversData);
-      setLastUpdate(new Date());
-    } catch (err) {
-      console.error('Erro ao carregar dados:', err);
+      if (isInitialLoadRef.current) {
+        setIsLoading(false);
+        isInitialLoadRef.current = false;
+      }
+    } catch (error) {
+      console.error('Erro ao carregar dados dos motoristas:', error);
       setError('Erro ao carregar dados dos motoristas');
-    } finally {
       if (isInitialLoadRef.current) {
         setIsLoading(false);
         isInitialLoadRef.current = false;
@@ -412,161 +211,119 @@ export default function AdminPage() {
     }
   };
 
-  // Função para centralizar no motorista
-  const centerOnDriver = (driver: any) => {
-    // Mudar para aba do mapa se não estiver nela
-    if (activeTab !== 'mapa') {
-      setActiveTab('mapa');
-    }
+  // Auto-refresh dos dados
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadDriversData();
+    }, 5000); // Refresh a cada 5 segundos
 
-    if (!driver.posicao) {
-      // Destacar mesmo sem posição
-      setSelectedDriver(driver.id);
-      return;
-    }
+    return () => clearInterval(interval);
+  }, []);
 
-    // Aguardar um pouco se mudou de aba para o mapa carregar
-    const centerMap = () => {
-      if (!mapInstanceRef.current) {
-        setTimeout(centerMap, 500);
-        return;
-      }
-
-      // Centralizar o mapa na posição do motorista
-      mapInstanceRef.current.setCenter({
-        lat: driver.posicao.latitude,
-        lng: driver.posicao.longitude
-      });
-      
-      // Dar zoom
-      mapInstanceRef.current.setZoom(15);
-      
-      // Destacar o motorista selecionado
-      setSelectedDriver(driver.id);
-      
-      // Abrir info window do motorista
-      setTimeout(() => {
-        const marker = markersRef.current.find(m => m.driverId === driver.id);
-        if (marker && marker.infoWindow) {
-          // Fechar outras info windows
-          markersRef.current.forEach(m => {
-            if (m.infoWindow && m !== marker) m.infoWindow.close();
-          });
-          
-          marker.infoWindow.open(mapInstanceRef.current, marker);
-        }
-      }, 300);
-    };
-
-    if (activeTab === 'mapa') {
-      centerMap();
-    } else {
-      setTimeout(centerMap, 500);
-    }
+  // Função para atualizar dados
+  const refreshData = async () => {
+    await loadDriversData();
   };
 
-  // Inicializar marcadores apenas uma vez quando o mapa estiver pronto
+  // Efeito para carregar dados iniciais
   useEffect(() => {
-    if (mapInstanceRef.current && driversDataRef.current.length > 0) {
-      updateMapMarkers();
+    loadDriversData();
+  }, []);
+
+  // Efeito para inicializar o mapa
+  useEffect(() => {
+    if (activeTab === 'mapa') {
+      setTimeout(() => {
+        initializeMap();
+      }, 100);
     }
-  }, [mapInstanceRef.current]);
+  }, [activeTab]);
 
-  // Carregar dados iniciais e configurar auto-refresh
+  // Subscription para atualizações em tempo real
   useEffect(() => {
-    // Só executar quando o usuário estiver carregado E tiver empresa_id
-    if (usuario && usuario.empresa_id && !authLoading) {
-  
-      loadDriversData();
-      
-      // Auto-refresh a cada 5 segundos
-      const interval = setInterval(() => {
-        loadDriversData();
-      }, 5000);
+    let isSubscribed = true;
+    let subscription: any = null;
 
-      return () => clearInterval(interval);
-    } else if (!authLoading && usuario && !usuario.empresa_id) {
-      setError('Usuário não tem empresa associada');
-      setIsLoading(false);
-    }
-  }, [usuario, authLoading]);
+    const setupSubscription = async () => {
+      try {
+        subscription = await subscribeToPositions((payload) => {
+          if (!isSubscribed) return;
+          
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            // Recarregar dados quando houver mudanças
+            loadDriversData();
+          }
+        });
+      } catch (error) {
+        console.error('Erro ao configurar subscription:', error);
+      }
+    };
 
-  // Configurar subscription para atualizações em tempo real
-  useEffect(() => {
-    const subscription = subscribeToPositions((payload: any) => {
-      
-      loadDriversData(); // Recarregar dados quando houver mudanças
-    });
+    setupSubscription();
 
     return () => {
-      unsubscribeFromPositions(subscription);
+      isSubscribed = false;
+      if (subscription) {
+        unsubscribeFromPositions(subscription);
+      }
     };
   }, []);
 
-  // Função para atualizar dados (botão refresh) - sem loading overlay
-  const refreshData = async () => {
-    if (!usuario?.empresa_id) return;
-    
-    try {
-      setError(null);
+  // Centralize o mapa no motorista selecionado
+  const centerMapOnDriver = (driver: any) => {
+    if (mapInstanceRef.current && driver.posicao?.latitude && driver.posicao?.longitude) {
+      const position = {
+        lat: parseFloat(driver.posicao.latitude),
+        lng: parseFloat(driver.posicao.longitude)
+      };
       
-      // Buscar dados sem mostrar loading
-      const posicoes = await buscarPosicoesMotoristas(usuario.empresa_id);
+      mapInstanceRef.current.setCenter(position);
+      mapInstanceRef.current.setZoom(15);
       
-      const driversData = posicoes.map((pos: any) => {
-        const ultimaAtualizacao = new Date(pos.atualizado_em);
-        const agora = new Date();
-        const diferencaMinutos = (agora.getTime() - ultimaAtualizacao.getTime()) / (1000 * 60);
-        const isOnline = diferencaMinutos < 1 && pos.latitude && pos.longitude;
-        
-        return {
-          id: pos.usuario.id,
-          nome: pos.usuario.nome,
-          posicao: pos.latitude && pos.longitude ? {
-            latitude: pos.latitude,
-            longitude: pos.longitude,
-            velocidade: pos.velocidade || 0,
-            atualizado_em: ultimaAtualizacao
-          } : null,
-          status: isOnline ? 'online' : 'offline'
-        };
-      });
-      
-             // Atualizar dados em memória e mapa diretamente
-       driversDataRef.current = driversData;
-       updateMapMarkersDirectly(driversData);
-       
- 
-       
-       // Atualizar apenas a sidebar
-       setDrivers(driversData);
-       setLastUpdate(new Date());
-     } catch (err) {
-       console.error('❌ Erro no refreshData:', err);
-       setError('Erro ao atualizar dados dos motoristas');
-     }
+      setSelectedDriver(driver.id);
+      setActiveTab('mapa');
+    }
   };
 
-
+  // Loading inicial
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="flex items-center space-x-2">
+          <RefreshCw className="w-6 h-6 animate-spin text-primary-600" />
+          <span className="text-gray-600">Carregando...</span>
+        </div>
+      </div>
+    );
+  }
 
   // Filtrar motoristas
   const filteredDrivers = drivers.filter(driver => {
     if (filter === 'all') return true;
-    return driver.status === filter;
+    
+    const isOnline = driver.posicao && 
+      new Date(driver.posicao.atualizado_em).getTime() > Date.now() - 60000;
+    
+    return filter === 'online' ? isOnline : !isOnline;
   });
 
   // Calcular estatísticas
   const stats = {
     total: drivers.length,
-    online: drivers.filter(d => d.status === 'online').length,
-    offline: drivers.filter(d => d.status === 'offline').length,
-    avgSpeed: drivers.reduce((acc, d) => acc + (d.posicao?.velocidade || 0), 0) / drivers.length
+    online: drivers.filter(driver => {
+      return driver.posicao && 
+        new Date(driver.posicao.atualizado_em).getTime() > Date.now() - 60000;
+    }).length,
+    offline: drivers.filter(driver => {
+      return !driver.posicao || 
+        new Date(driver.posicao.atualizado_em).getTime() <= Date.now() - 60000;
+    }).length
   };
 
   // Função para lidar com sucesso do cadastro
   const handleCadastroSuccess = () => {
     setRefreshDriversList(true);
-    setActiveTab('lista'); // Mudar para aba da lista após cadastro
+    setActiveTab('lista');
   };
 
   // Função para lidar com refresh completo da lista
@@ -574,259 +331,317 @@ export default function AdminPage() {
     setRefreshDriversList(false);
   };
 
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (error) {
+      console.error('Erro ao fazer logout:', error);
+    }
+  };
+
   return (
     <ProtectedRoute only="admin">
-      {/* Conteúdo da página admin */}
       <div className="min-h-screen bg-gray-50">
-        {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200">
-          <div className="px-4 py-4">
-            <div className="flex items-center justify-between">
+        {/* Header Mobile-First */}
+        <header className="bg-white shadow-lg border-b border-gray-200 sticky top-0 z-40">
+          <div className="max-w-7xl mx-auto">
+            {/* Top Bar */}
+            <div className="flex items-center justify-between h-16 px-4 sm:px-6 lg:px-8">
+              {/* Logo e título */}
               <div className="flex items-center space-x-3">
-                <div className="bg-primary-600 p-2 rounded-lg">
-                  <MapPin className="w-5 h-5 text-white" />
+                <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-2.5 rounded-xl shadow-lg">
+                  <Building className="w-6 h-6 text-white" />
                 </div>
-                <div>
-                  <h1 className="text-lg font-semibold text-gray-900">Painel Admin</h1>
-                  <p className="text-sm text-gray-600">
-                    {usuario?.empresa?.nome || 'Carregando empresa...'}
+                <div className="hidden sm:block">
+                  <h1 className="text-xl font-bold text-gray-900">Admin Panel</h1>
+                  <p className="text-sm text-gray-500 font-medium">
+                    {usuario?.empresa?.nome || 'Carregando...'}
                   </p>
                 </div>
               </div>
-              
-              <div className="flex items-center space-x-3">
-                {/* Navegação por abas */}
-                <div className="flex items-center space-x-1 bg-gray-100 rounded-lg p-1">
-                  <button
-                    onClick={() => setActiveTab('mapa')}
-                    className={`px-3 py-1.5 text-sm rounded-md transition-colors flex items-center space-x-1 ${
-                      activeTab === 'mapa'
-                        ? 'bg-white text-primary-600 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    <MapPin className="w-4 h-4" />
-                    <span>Mapa</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('cadastro')}
-                    className={`px-3 py-1.5 text-sm rounded-md transition-colors flex items-center space-x-1 ${
-                      activeTab === 'cadastro'
-                        ? 'bg-white text-primary-600 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    <UserPlus className="w-4 h-4" />
-                    <span>Cadastrar</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('lista')}
-                    className={`px-3 py-1.5 text-sm rounded-md transition-colors flex items-center space-x-1 ${
-                      activeTab === 'lista'
-                        ? 'bg-white text-primary-600 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    <List className="w-4 h-4" />
-                    <span>Motoristas</span>
-                  </button>
+
+              {/* Stats compactas (mobile) */}
+              <div className="flex items-center space-x-2 sm:hidden">
+                <div className="bg-blue-50 px-2 py-1 rounded-lg">
+                  <span className="text-xs font-semibold text-blue-600">{stats.total}</span>
+                </div>
+                <div className="bg-green-50 px-2 py-1 rounded-lg">
+                  <span className="text-xs font-semibold text-green-600">{stats.online}</span>
+                </div>
+              </div>
+
+              {/* Ações desktop */}
+              <div className="hidden sm:flex items-center space-x-4">
+                {/* Stats cards */}
+                <div className="flex items-center space-x-3">
+                  <div className="bg-blue-50 px-3 py-2 rounded-lg">
+                    <div className="flex items-center space-x-2">
+                      <Users className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-semibold text-blue-900">{stats.total}</span>
+                    </div>
+                  </div>
+                  <div className="bg-green-50 px-3 py-2 rounded-lg">
+                    <div className="flex items-center space-x-2">
+                      <Activity className="w-4 h-4 text-green-600" />
+                      <span className="text-sm font-semibold text-green-900">{stats.online}</span>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="text-right text-sm">
-                  <p className="font-medium text-gray-900">{usuario?.nome}</p>
-                  <p className="text-gray-500">Administrador</p>
+                {/* User info */}
+                <div className="text-right">
+                  <p className="text-sm font-semibold text-gray-900">{usuario?.nome}</p>
+                  <p className="text-xs text-gray-500">Administrador</p>
                 </div>
+
+                {/* Actions */}
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={refreshData}
+                    disabled={isLoading}
+                    className="flex items-center space-x-2 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                    <span className="hidden lg:block">Atualizar</span>
+                  </button>
+                  
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center space-x-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg font-medium transition-colors"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span className="hidden lg:block">Sair</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Mobile menu button */}
+              <div className="sm:hidden">
                 <button
-                  onClick={refreshData}
-                  disabled={isLoading}
-                  className="btn btn-primary flex items-center space-x-2"
+                  onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                  className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                 >
-                  <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-                  <span>Atualizar</span>
+                  {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Mobile Navigation */}
+            {mobileMenuOpen && (
+              <div className="sm:hidden border-t border-gray-200 bg-white">
+                <div className="px-4 py-3 space-y-3">
+                  {/* User info mobile */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-semibold text-gray-900">{usuario?.nome}</p>
+                      <p className="text-sm text-gray-500">Administrador</p>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={refreshData}
+                        disabled={isLoading}
+                        className="p-2 bg-blue-50 text-blue-600 rounded-lg"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                      <button
+                        onClick={handleLogout}
+                        className="p-2 bg-red-50 text-red-600 rounded-lg"
+                      >
+                        <LogOut className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+                         {/* Navigation Tabs */}
+            <div className="border-t border-gray-200 bg-white">
+              <div className="flex">
+                <button
+                  onClick={() => { setActiveTab('mapa'); setMobileMenuOpen(false); }}
+                  className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'mapa'
+                      ? 'border-blue-500 text-blue-600 bg-blue-50'
+                      : 'border-transparent text-gray-700 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <MapPin className="w-4 h-4" />
+                  <span>Mapa</span>
                 </button>
                 <button
-                  onClick={logout}
-                  className="btn btn-secondary flex items-center space-x-2"
+                  onClick={() => { setActiveTab('cadastro'); setMobileMenuOpen(false); }}
+                  className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'cadastro'
+                      ? 'border-blue-500 text-blue-600 bg-blue-50'
+                      : 'border-transparent text-gray-700 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
                 >
-                  <Users className="w-4 h-4" />
-                  <span>Sair</span>
+                  <UserPlus className="w-4 h-4" />
+                  <span>Cadastrar</span>
+                </button>
+                <button
+                  onClick={() => { setActiveTab('lista'); setMobileMenuOpen(false); }}
+                  className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'lista'
+                      ? 'border-blue-500 text-blue-600 bg-blue-50'
+                      : 'border-transparent text-gray-700 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <List className="w-4 h-4" />
+                  <span>Motoristas</span>
                 </button>
               </div>
             </div>
           </div>
         </header>
 
-        {/* Conteúdo baseado na aba ativa */}
-        {activeTab === 'mapa' && (
-          <div className="flex flex-col lg:flex-row h-screen">
-            {/* Sidebar - Lista de Motoristas */}
-            <div className="w-full lg:w-96 bg-white border-r border-gray-200 flex flex-col">
-              {/* Stats Cards */}
-              <div className="p-4 border-b border-gray-200">
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div className="bg-primary-50 p-3 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs text-primary-600 font-medium">Total</p>
-                        <p className="text-xl font-bold text-primary-900">{stats.total}</p>
-                      </div>
-                      <Users className="w-6 h-6 text-primary-600" />
-                    </div>
-                  </div>
-                  
-                  <div className="bg-success-50 p-3 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs text-success-600 font-medium">Online</p>
-                        <p className="text-xl font-bold text-success-900">{stats.online}</p>
-                      </div>
-                      <Activity className="w-6 h-6 text-success-600" />
-                    </div>
-                  </div>
-                </div>
-
+        {/* Content */}
+        <main className="flex-1">
+          {/* Aba do Mapa */}
+          {activeTab === 'mapa' && (
+            <div className="flex flex-col lg:flex-row h-[calc(100vh-140px)]">
+              {/* Sidebar - Lista de Motoristas */}
+              <div className="w-full lg:w-96 bg-white border-r border-gray-200 flex flex-col">
                 {/* Filters */}
-                <div className="flex space-x-2">
-                  {[
-                    { value: 'all', label: 'Todos' },
-                    { value: 'online', label: 'Online' },
-                    { value: 'offline', label: 'Offline' }
-                  ].map(filterOption => (
-                    <button
-                      key={filterOption.value}
-                      onClick={() => setFilter(filterOption.value as any)}
-                      className={`px-3 py-1 text-xs rounded-full transition-colors ${
-                        filter === filterOption.value
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                      }`}
-                    >
-                      {filterOption.label}
-                    </button>
-                  ))}
+                <div className="p-4 border-b border-gray-200">
+                  <div className="flex space-x-1">
+                    {[
+                      { key: 'all', label: 'Todos', icon: Users },
+                      { key: 'online', label: 'Online', icon: Activity },
+                      { key: 'offline', label: 'Offline', icon: Clock }
+                    ].map(filterOption => {
+                      const Icon = filterOption.icon;
+                      return (
+                        <button
+                          key={filterOption.key}
+                          onClick={() => setFilter(filterOption.key as any)}
+                          className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                            filter === filterOption.key
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'text-gray-600 hover:bg-gray-100'
+                          }`}
+                        >
+                          <Icon className="w-3 h-3" />
+                          <span>{filterOption.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Lista de Motoristas */}
+                <div className="flex-1 overflow-y-auto">
+                  {filteredDrivers.length === 0 ? (
+                    <div className="p-4 text-center text-gray-500">
+                      <Users className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                      <p className="text-sm">Nenhum motorista encontrado</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {filteredDrivers.map(driver => {
+                        const isOnline = driver.posicao && 
+                          new Date(driver.posicao.atualizado_em).getTime() > Date.now() - 60000;
+                        
+                        return (
+                          <div
+                            key={driver.id}
+                            onClick={() => centerMapOnDriver(driver)}
+                            className={`p-4 cursor-pointer hover:bg-gray-50 transition-colors ${
+                              selectedDriver === driver.id ? 'bg-blue-50 border-r-2 border-blue-500' : ''
+                            }`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <div className={`w-3 h-3 rounded-full ${isOnline ? 'bg-green-500' : 'bg-gray-400'}`} />
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium text-gray-900 truncate">{driver.nome}</p>
+                                <p className="text-sm text-gray-500 truncate">{driver.empresa?.nome}</p>
+                                {driver.posicao && (
+                                  <p className="text-xs text-gray-400">
+                                    {new Date(driver.posicao.atualizado_em).toLocaleTimeString()}
+                                  </p>
+                                )}
+                              </div>
+                              <Car className="w-4 h-4 text-gray-400" />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Lista de Motoristas */}
-              <div className="flex-1 overflow-y-auto">
+              {/* Mapa */}
+              <div className="flex-1 relative">
+                <div
+                  ref={mapRef}
+                  className="w-full h-full"
+                  style={{ minHeight: '400px' }}
+                />
+                
+                {/* Loading overlay */}
+                {isLoading && (
+                  <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center">
+                    <div className="flex items-center space-x-3 bg-white px-4 py-3 rounded-lg shadow-lg">
+                      <RefreshCw className="w-5 h-5 animate-spin text-blue-600" />
+                      <span className="text-sm font-medium text-gray-700">Carregando dados...</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Error message */}
                 {error && (
-                  <div className="p-4 m-4 bg-danger-50 border border-danger-200 rounded-lg">
+                  <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded-lg p-3">
                     <div className="flex items-center space-x-2">
-                      <AlertCircle className="w-5 h-5 text-danger-600" />
-                      <div>
-                        <h4 className="font-medium text-danger-800">Erro ao carregar dados</h4>
-                        <p className="text-sm text-danger-700 mt-1">{error}</p>
-                      </div>
+                      <AlertCircle className="w-5 h-5 text-red-500" />
+                      <p className="text-sm text-red-700">{error}</p>
                     </div>
                   </div>
                 )}
-                
-                {!error && filteredDrivers.length === 0 && !isLoading && (
-                  <div className="p-8 text-center text-gray-500">
-                    <Car className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                    <p className="text-lg font-medium">Nenhum motorista encontrado</p>
-                    <p className="text-sm mt-1">
-                      {filter === 'all' 
-                        ? 'Nenhum motorista está enviando sua localização no momento.'
-                        : `Nenhum motorista ${filter} encontrado.`
-                      }
-                    </p>
-                  </div>
-                )}
-                
-                {filteredDrivers.map(driver => (
-                  <div
-                    key={driver.id}
-                    onClick={() => centerOnDriver(driver)}
-                    className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
-                      selectedDriver === driver.id ? 'bg-primary-50 border-primary-200' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center space-x-3">
-                        <div className={`w-3 h-3 rounded-full ${
-                          driver.status === 'online' ? 'bg-success-500' : 'bg-gray-400'
-                        }`}></div>
-                        <span className="font-medium text-gray-900">{driver.nome}</span>
-                      </div>
-                      <Car className="w-4 h-4 text-gray-400" />
-                    </div>
-                    
-                    {driver.posicao ? (
-                      <div className="text-sm text-gray-600 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span>Velocidade:</span>
-                          <span className="font-mono">{driver.posicao.velocidade?.toFixed(1)} km/h</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span>Atualizado:</span>
-                          <span className="font-mono text-xs">
-                            {driver.posicao.atualizado_em.toLocaleTimeString()}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-gray-500 italic">
-                        <div className="flex items-center space-x-2">
-                          <MapPin className="w-4 h-4" />
-                          <span>Localização não disponível</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
               </div>
+            </div>
+          )}
 
-              {/* Footer da Sidebar */}
-              <div className="p-4 border-t border-gray-200 bg-gray-50">
-                <div className="flex items-center justify-between text-xs text-gray-500">
-                  <span>Última atualização:</span>
-                  <span>{lastUpdate.toLocaleTimeString()}</span>
+          {/* Aba de Cadastro */}
+          {activeTab === 'cadastro' && (
+            <div className="p-4 sm:p-6 max-w-4xl mx-auto">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-200">
+                  <h2 className="text-xl font-bold text-gray-900">Cadastrar Motorista</h2>
+                  <p className="text-sm text-gray-600">Adicione um novo motorista à sua empresa</p>
+                </div>
+                <div className="p-6">
+                  <CadastroMotorista onSuccess={handleCadastroSuccess} />
                 </div>
               </div>
             </div>
+          )}
 
-            {/* Mapa */}
-            <div className="flex-1 relative">
-              <div
-                ref={mapRef}
-                className="w-full h-full"
-                style={{ minHeight: '400px' }}
-              />
-              
-              {/* Loading overlay */}
-              {isLoading && (
-                  <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center">
-                    <div className="flex items-center space-x-2">
-                      <RefreshCw className="w-5 h-5 animate-spin text-primary-600" />
-                      <span className="text-sm text-gray-600">Atualizando...</span>
-                    </div>
-                  </div>
-              )}
+          {/* Aba de Lista de Motoristas */}
+          {activeTab === 'lista' && (
+            <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-200">
+                  <h2 className="text-xl font-bold text-gray-900">Lista de Motoristas</h2>
+                  <p className="text-sm text-gray-600">Gerencie todos os motoristas da sua empresa</p>
+                </div>
+                <div className="p-6">
+                  <ListaMotoristas 
+                    refresh={refreshDriversList} 
+                    onRefreshComplete={handleRefreshComplete}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </main>
 
-        {/* Aba de Cadastro */}
-        {activeTab === 'cadastro' && (
-          <div className="p-6 max-w-2xl mx-auto">
-            <CadastroMotorista onSuccess={handleCadastroSuccess} />
-          </div>
-        )}
-
-        {/* Aba de Lista de Motoristas */}
-        {activeTab === 'lista' && (
-          <div className="p-6 max-w-6xl mx-auto">
-            <ListaMotoristas 
-              refresh={refreshDriversList} 
-              onRefreshComplete={handleRefreshComplete}
-            />
-          </div>
-        )}
+        {/* PWA Install Prompt */}
+        <PWAInstallPrompt />
       </div>
-
-      {/* PWA Install Prompt */}
-      <PWAInstallPrompt />
     </ProtectedRoute>
   );
 } 
