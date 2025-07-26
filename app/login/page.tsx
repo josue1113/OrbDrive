@@ -257,30 +257,6 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Dados de Teste */}
-          <div className="mt-8 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center space-x-2 mb-4">
-              <div className="bg-yellow-100 p-1 rounded">
-                <AlertCircle className="w-4 h-4 text-yellow-600" />
-              </div>
-              <h3 className="text-sm font-semibold text-gray-900">Dados para Teste</h3>
-            </div>
-            
-            <div className="space-y-3 text-sm">
-              <div className="bg-blue-50 p-3 rounded-lg">
-                <p className="font-semibold text-blue-900 mb-1">👨‍💼 Administrador</p>
-                <p className="text-blue-700"><strong>Email:</strong> admin@abc.com</p>
-                <p className="text-blue-700"><strong>Senha:</strong> senha123</p>
-              </div>
-              
-              <div className="bg-green-50 p-3 rounded-lg">
-                <p className="font-semibold text-green-900 mb-1">🚛 Motorista</p>
-                <p className="text-green-700"><strong>Email:</strong> joao@abc.com</p>
-                <p className="text-green-700"><strong>Senha:</strong> senha123</p>
-              </div>
-            </div>
-          </div>
-
           {/* Footer */}
           <div className="text-center mt-8">
             <p className="text-xs text-gray-500 bg-gray-50 px-4 py-2 rounded-lg">
