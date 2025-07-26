@@ -192,8 +192,21 @@ export default function AdminPage() {
       
       const data = await buscarPosicoesMotoristas(usuario?.empresa_id);
       
-      setDrivers(data);
-      updateMapMarkers(data);
+      // Transformar dados para o formato esperado pela interface
+      const driversFormatted = data.map(item => ({
+        id: item.usuario.id,
+        nome: item.usuario.nome,
+        empresa: item.usuario.empresa,
+        posicao: item.latitude && item.longitude ? {
+          latitude: item.latitude,
+          longitude: item.longitude,
+          velocidade: item.velocidade,
+          atualizado_em: item.atualizado_em
+        } : null
+      }));
+      
+      setDrivers(driversFormatted);
+      updateMapMarkers(driversFormatted);
       setLastUpdate(new Date());
       setError(null);
       
@@ -214,11 +227,13 @@ export default function AdminPage() {
   // Auto-refresh dos dados
   useEffect(() => {
     const interval = setInterval(() => {
-      loadDriversData();
+      if (usuario?.empresa_id) {
+        loadDriversData();
+      }
     }, 5000); // Refresh a cada 5 segundos
 
     return () => clearInterval(interval);
-  }, []);
+  }, [usuario?.empresa_id]);
 
   // Função para atualizar dados
   const refreshData = async () => {
@@ -227,8 +242,10 @@ export default function AdminPage() {
 
   // Efeito para carregar dados iniciais
   useEffect(() => {
-    loadDriversData();
-  }, []);
+    if (usuario?.empresa_id) {
+      loadDriversData();
+    }
+  }, [usuario?.empresa_id]);
 
   // Efeito para inicializar o mapa
   useEffect(() => {
